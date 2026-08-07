@@ -12,6 +12,7 @@ import {
   optionalIntegerLike,
   optionalRecord,
   optionalString as asOptionalString,
+  optionalStringArray,
 } from "../../core/cast.ts";
 import { assertPublicHttpUrl, isPrivateNetworkAccessAllowed } from "../../core/request.ts";
 import {
@@ -35,7 +36,7 @@ interface GitlabActionContext extends ApiKeyProviderContext {
 }
 
 interface GitlabRequestOptions {
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Record<string, unknown>;
   body?: Record<string, unknown>;
 }
@@ -50,6 +51,103 @@ export const gitlabActionHandlers: Record<string, GitlabActionHandler> = {
   get_project(input, context) {
     const projectId = readProjectId(input);
     return gitlabRequestJson(`/projects/${projectId}`, context);
+  },
+  update_project(input, context) {
+    return updateGitlabProject(input, context);
+  },
+  list_project_labels(input, context) {
+    return listGitlabCollection("labels", context, `/projects/${readProjectId(input)}/labels`, {
+      search: trimOptionalString(input.search),
+      ...paginationQuery(input),
+    });
+  },
+  create_project_label(input, context) {
+    return gitlabRequestJson(`/projects/${readProjectId(input)}/labels`, context, "execute", {
+      method: "POST",
+      body: compactObject({
+        name: asOptionalString(input.name),
+        color: asOptionalString(input.color),
+        description: asOptionalString(input.description),
+      }),
+    });
+  },
+  update_project_label(input, context) {
+    return gitlabRequestJson(
+      `/projects/${readProjectId(input)}/labels/${readPathIdentifier(input.labelId, "labelId")}`,
+      context,
+      "execute",
+      {
+        method: "PUT",
+        body: compactObject({
+          new_name: asOptionalString(input.newName),
+          color: asOptionalString(input.color),
+          description: asOptionalString(input.description),
+        }),
+      },
+    );
+  },
+  delete_project_label(input, context) {
+    return deleteGitlabResource(
+      `/projects/${readProjectId(input)}/labels/${readPathIdentifier(input.labelId, "labelId")}`,
+      context,
+    );
+  },
+  list_project_pipelines(input, context) {
+    return listGitlabCollection("pipelines", context, `/projects/${readProjectId(input)}/pipelines`, {
+      status: asOptionalString(input.status),
+      source: asOptionalString(input.source),
+      ref: trimOptionalString(input.ref),
+      sha: trimOptionalString(input.sha),
+      username: trimOptionalString(input.username),
+      updated_after: trimOptionalString(input.updatedAfter),
+      updated_before: trimOptionalString(input.updatedBefore),
+      order_by: asOptionalString(input.orderBy),
+      sort: asOptionalString(input.sort),
+      ...paginationQuery(input),
+    });
+  },
+  get_project_pipeline(input, context) {
+    return gitlabRequestJson(
+      `/projects/${readProjectId(input)}/pipelines/${readPositiveInteger(input.pipelineId, "pipelineId")}`,
+      context,
+    );
+  },
+  retry_project_pipeline(input, context) {
+    return mutateGitlabPipeline(input, context, "retry");
+  },
+  cancel_project_pipeline(input, context) {
+    return mutateGitlabPipeline(input, context, "cancel");
+  },
+  list_project_pipeline_jobs(input, context) {
+    const pipelineId = readPositiveInteger(input.pipelineId, "pipelineId");
+    return listGitlabCollection("jobs", context, `/projects/${readProjectId(input)}/pipelines/${pipelineId}/jobs`, {
+      "scope[]": optionalStringArray(input.scope),
+      include_retried: optionalBoolean(input.includeRetried),
+      ...paginationQuery(input),
+    });
+  },
+  list_project_releases(input, context) {
+    return listGitlabCollection("releases", context, `/projects/${readProjectId(input)}/releases`, {
+      ...paginationQuery(input),
+    });
+  },
+  get_project_release(input, context) {
+    return gitlabRequestJson(
+      `/projects/${readProjectId(input)}/releases/${readPathIdentifier(input.tagName, "tagName")}`,
+      context,
+    );
+  },
+  create_project_release(input, context) {
+    return createOrUpdateGitlabRelease(input, context, "POST");
+  },
+  update_project_release(input, context) {
+    return createOrUpdateGitlabRelease(input, context, "PUT");
+  },
+  delete_project_release(input, context) {
+    return deleteGitlabResource(
+      `/projects/${readProjectId(input)}/releases/${readPathIdentifier(input.tagName, "tagName")}`,
+      context,
+    );
   },
   list_project_issues(input, context) {
     return listGitlabProjectIssues(input, context);
@@ -172,36 +270,90 @@ function credentialError(message: string): ProviderRequestError {
 async function listGitlabProjects(
   input: GitlabActionInput,
   context: GitlabActionContext,
-): Promise<{
-  projects: unknown[];
-  total: number | null;
-  nextPage: number | null;
-}> {
-  const response = await gitlabRequest("/projects", context, {
-    query: compactObject({
-      search: trimOptionalString(input.search),
-      membership: optionalBoolean(input.membership),
-      owned: optionalBoolean(input.owned),
-      simple: optionalBoolean(input.simple),
-      order_by: asOptionalString(input.orderBy),
-      sort: asOptionalString(input.sort),
-      page: asOptionalPositiveInteger(input.page, "page"),
-      per_page: asOptionalPositiveInteger(input.perPage, "perPage"),
+): Promise<Record<string, unknown>> {
+  return listGitlabCollection("projects", context, "/projects", {
+    search: trimOptionalString(input.search),
+    membership: optionalBoolean(input.membership),
+    owned: optionalBoolean(input.owned),
+    simple: optionalBoolean(input.simple),
+    order_by: asOptionalString(input.orderBy),
+    sort: asOptionalString(input.sort),
+    ...paginationQuery(input),
+  });
+}
+
+function updateGitlabProject(input: GitlabActionInput, context: GitlabActionContext): Promise<unknown> {
+  return gitlabRequestJson(`/projects/${readProjectId(input)}`, context, "execute", {
+    method: "PUT",
+    body: compactObject({
+      description: typeof input.description === "string" ? input.description : undefined,
+      topics: optionalStringArray(input.topics),
+      visibility: asOptionalString(input.visibility),
     }),
   });
+}
 
+async function listGitlabCollection(
+  field: string,
+  context: GitlabActionContext,
+  path: string,
+  query: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const response = await gitlabRequest(path, context, { query: compactObject(query) });
   const payload = await readGitlabPayload(response);
   if (!response.ok) {
     throw createGitlabError(response, payload, "execute");
   }
   if (!Array.isArray(payload)) {
-    throw new ProviderRequestError(502, "gitlab projects response is not an array", payload);
+    throw new ProviderRequestError(502, `gitlab ${field} response is not an array`, payload);
   }
+  return { [field]: payload, ...readPagination(response.headers) };
+}
 
+function paginationQuery(input: GitlabActionInput): Record<string, number | undefined> {
   return {
-    projects: payload,
-    ...readPagination(response.headers),
+    page: asOptionalPositiveInteger(input.page, "page"),
+    per_page: asOptionalPositiveInteger(input.perPage, "perPage"),
   };
+}
+
+function mutateGitlabPipeline(
+  input: GitlabActionInput,
+  context: GitlabActionContext,
+  operation: "retry" | "cancel",
+): Promise<unknown> {
+  return gitlabRequestJson(
+    `/projects/${readProjectId(input)}/pipelines/${readPositiveInteger(input.pipelineId, "pipelineId")}/${operation}`,
+    context,
+    "execute",
+    { method: "POST" },
+  );
+}
+
+function createOrUpdateGitlabRelease(
+  input: GitlabActionInput,
+  context: GitlabActionContext,
+  method: "POST" | "PUT",
+): Promise<unknown> {
+  const projectId = readProjectId(input);
+  const tagName = readPathIdentifier(input.tagName, "tagName");
+  const path = method === "POST" ? `/projects/${projectId}/releases` : `/projects/${projectId}/releases/${tagName}`;
+  return gitlabRequestJson(path, context, "execute", {
+    method,
+    body: compactObject({
+      tag_name: method === "POST" ? trimOptionalString(input.tagName) : undefined,
+      name: typeof input.name === "string" ? input.name : undefined,
+      description: typeof input.description === "string" ? input.description : undefined,
+      ref: trimOptionalString(input.ref),
+      milestones: optionalStringArray(input.milestones),
+      released_at: trimOptionalString(input.releasedAt),
+    }),
+  });
+}
+
+async function deleteGitlabResource(path: string, context: GitlabActionContext): Promise<{ success: true }> {
+  await gitlabRequestJson(path, context, "execute", { method: "DELETE" });
+  return { success: true };
 }
 
 async function listGitlabProjectIssues(
@@ -276,7 +428,11 @@ async function gitlabRequest(
 ): Promise<Response> {
   const url = new URL(`${context.apiBaseUrl}${path}`);
   for (const [key, value] of Object.entries(options.query ?? {})) {
-    if (value !== undefined) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        url.searchParams.append(key, String(item));
+      }
+    } else if (value !== undefined) {
       url.searchParams.set(key, String(value));
     }
   }
@@ -367,6 +523,22 @@ function readProjectId(input: GitlabActionInput): string {
     throw new ProviderRequestError(400, "projectId is required");
   }
   return projectId;
+}
+
+function readPathIdentifier(value: unknown, fieldName: string): string {
+  const identifier = trimOptionalString(value);
+  if (!identifier) {
+    throw new ProviderRequestError(400, `${fieldName} is required`);
+  }
+  return encodeURIComponent(identifier);
+}
+
+function readPositiveInteger(value: unknown, fieldName: string): number {
+  const parsed = asOptionalPositiveInteger(value, fieldName);
+  if (parsed === undefined) {
+    throw new ProviderRequestError(400, `${fieldName} is required`);
+  }
+  return parsed;
 }
 
 function trimOptionalString(value: unknown): string | undefined {

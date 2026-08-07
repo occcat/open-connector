@@ -46,6 +46,7 @@ const project = s.looseObject(
     path: s.string({ description: "The project path." }),
     path_with_namespace: s.string({ description: "The project path including namespace." }),
     description: s.nullableString("The project description."),
+    topics: s.array(s.string({ description: "A project topic." }), { description: "Topics assigned to the project." }),
     default_branch: s.nullableString("The default branch name."),
     visibility: s.string({ description: "The project visibility." }),
     web_url: s.string({ description: "The project URL." }),
@@ -115,6 +116,68 @@ const paginatedIssues = s.object(
   },
   { required: ["issues", "total", "nextPage"], description: "A paginated GitLab issues response." },
 );
+const label = s.looseObject(
+  {
+    id: s.integer({ description: "The label ID." }),
+    name: s.string({ description: "The label name." }),
+    color: s.string({ description: "The label color." }),
+    text_color: s.string({ description: "The label text color." }),
+    description: s.nullableString("The label description."),
+    open_issues_count: s.integer({ description: "The number of open issues with the label." }),
+    closed_issues_count: s.integer({ description: "The number of closed issues with the label." }),
+  },
+  { description: "A GitLab project label." },
+);
+const pipeline = s.looseObject(
+  {
+    id: s.integer({ description: "The pipeline ID." }),
+    iid: s.integer({ description: "The internal pipeline ID within the project." }),
+    project_id: s.integer({ description: "The project ID." }),
+    status: s.string({ description: "The pipeline status." }),
+    source: s.string({ description: "The pipeline source." }),
+    ref: s.nullableString("The branch or tag reference."),
+    sha: s.string({ description: "The commit SHA." }),
+    web_url: s.string({ description: "The pipeline URL." }),
+    created_at: s.string({ description: "The pipeline creation timestamp." }),
+    updated_at: s.string({ description: "The pipeline update timestamp." }),
+  },
+  { description: "A GitLab pipeline." },
+);
+const job = s.looseObject(
+  {
+    id: s.integer({ description: "The job ID." }),
+    name: s.string({ description: "The job name." }),
+    stage: s.string({ description: "The pipeline stage." }),
+    status: s.string({ description: "The job status." }),
+    ref: s.nullableString("The branch or tag reference."),
+    web_url: s.nullableString("The job URL."),
+    created_at: s.string({ description: "The job creation timestamp." }),
+    started_at: s.nullableString("The job start timestamp."),
+    finished_at: s.nullableString("The job completion timestamp."),
+    duration: s.nullableNumber("The job duration in seconds."),
+  },
+  { description: "A GitLab pipeline job." },
+);
+const release = s.looseObject(
+  {
+    tag_name: s.string({ description: "The release tag name." }),
+    name: s.nullableString("The release name."),
+    description: s.nullableString("The release notes."),
+    created_at: s.string({ description: "The release creation timestamp." }),
+    released_at: s.string({ description: "The release timestamp." }),
+    upcoming_release: s.boolean({ description: "Whether the release date is in the future." }),
+    tag_path: s.string({ description: "The project-relative tag path." }),
+  },
+  { description: "A GitLab release." },
+);
+const paginatedLabels = paginated("labels", label, "project labels");
+const paginatedPipelines = paginated("pipelines", pipeline, "pipelines");
+const paginatedJobs = paginated("jobs", job, "pipeline jobs");
+const paginatedReleases = paginated("releases", release, "releases");
+const success = s.object(
+  { success: s.boolean({ description: "Whether the operation completed successfully." }) },
+  { required: ["success"], description: "A successful GitLab operation." },
+);
 const projectId = s.string({
   minLength: 1,
   description: "The GitLab project ID or URL-encoded path with namespace, such as 123 or group%2Fproject.",
@@ -122,6 +185,17 @@ const projectId = s.string({
 
 function input(properties: Record<string, JsonSchema>, required: string[] = []): JsonSchema {
   return s.actionInput(properties, required, "GitLab action input.");
+}
+
+function paginated(field: string, item: JsonSchema, description: string): JsonSchema {
+  return s.object(
+    {
+      [field]: s.array(item, { description: `GitLab ${description} returned by the request.` }),
+      total: s.nullable(s.integer({ description: `The total number of ${description} when GitLab returns it.` })),
+      nextPage: s.nullable(s.integer({ description: "The next page number when another page exists." })),
+    },
+    { required: [field, "total", "nextPage"], description: `A paginated GitLab ${description} response.` },
+  );
 }
 
 const actions: GitlabActionSource[] = [
@@ -153,6 +227,218 @@ const actions: GitlabActionSource[] = [
     description: "Get a GitLab project by numeric ID or URL-encoded path with namespace.",
     inputSchema: input({ projectId }, ["projectId"]),
     outputSchema: project,
+  },
+  {
+    name: "update_project",
+    description: "Update long-term GitLab project metadata such as description, topics, or visibility.",
+    inputSchema: input(
+      {
+        projectId,
+        description: s.string({ description: "The new project description. Use an empty string to clear it." }),
+        topics: s.array(s.string({ minLength: 1, description: "A project topic." }), {
+          description: "The complete replacement list of project topics. Use an empty array to clear topics.",
+        }),
+        visibility: s.stringEnum(["private", "internal", "public"], {
+          description: "The new project visibility.",
+        }),
+      },
+      ["projectId"],
+    ),
+    outputSchema: project,
+  },
+  {
+    name: "list_project_labels",
+    description: "List labels configured for a GitLab project.",
+    inputSchema: input(
+      { projectId, search: s.string({ minLength: 1, description: "Search labels by name." }), ...pagination },
+      ["projectId"],
+    ),
+    outputSchema: paginatedLabels,
+  },
+  {
+    name: "create_project_label",
+    description: "Create a label in a GitLab project.",
+    inputSchema: input(
+      {
+        projectId,
+        name: s.string({ minLength: 1, description: "The label name." }),
+        color: s.string({ minLength: 1, description: "The label color, such as #FF0000 or a CSS color name." }),
+        description: s.string({ description: "The label description." }),
+      },
+      ["projectId", "name", "color"],
+    ),
+    outputSchema: label,
+  },
+  {
+    name: "update_project_label",
+    description: "Update a GitLab project label identified by numeric ID or URL-encoded name.",
+    inputSchema: input(
+      {
+        projectId,
+        labelId: s.string({ minLength: 1, description: "The label ID or URL-encoded label name." }),
+        newName: s.string({ minLength: 1, description: "The new label name." }),
+        color: s.string({ minLength: 1, description: "The new label color." }),
+        description: s.string({ description: "The new label description. Use an empty string to clear it." }),
+      },
+      ["projectId", "labelId"],
+    ),
+    outputSchema: label,
+  },
+  {
+    name: "delete_project_label",
+    description: "Delete a GitLab project label identified by numeric ID or URL-encoded name.",
+    inputSchema: input(
+      { projectId, labelId: s.string({ minLength: 1, description: "The label ID or URL-encoded label name." }) },
+      ["projectId", "labelId"],
+    ),
+    outputSchema: success,
+  },
+  {
+    name: "list_project_pipelines",
+    description: "List pipelines for a GitLab project with common status, source, ref, and SHA filters.",
+    inputSchema: input(
+      {
+        projectId,
+        status: s.stringEnum(
+          [
+            "created",
+            "waiting_for_resource",
+            "preparing",
+            "pending",
+            "running",
+            "success",
+            "failed",
+            "canceled",
+            "skipped",
+            "manual",
+            "scheduled",
+          ],
+          { description: "Filter by pipeline status." },
+        ),
+        source: s.string({ minLength: 1, description: "Filter by pipeline source." }),
+        ref: s.string({ minLength: 1, description: "Filter by branch or tag reference." }),
+        sha: s.string({ minLength: 1, description: "Filter by commit SHA." }),
+        username: s.string({ minLength: 1, description: "Filter by the user who triggered the pipeline." }),
+        updatedAfter: s.string({
+          minLength: 1,
+          description: "Return pipelines updated after this ISO 8601 timestamp.",
+        }),
+        updatedBefore: s.string({
+          minLength: 1,
+          description: "Return pipelines updated before this ISO 8601 timestamp.",
+        }),
+        orderBy: s.stringEnum(["id", "status", "ref", "updated_at", "user_id"], { description: "Sort field." }),
+        sort: s.stringEnum(["asc", "desc"], { description: "Sort direction." }),
+        ...pagination,
+      },
+      ["projectId"],
+    ),
+    outputSchema: paginatedPipelines,
+  },
+  {
+    name: "get_project_pipeline",
+    description: "Get one pipeline in a GitLab project.",
+    inputSchema: input({ projectId, pipelineId: s.integer({ minimum: 1, description: "The pipeline ID." }) }, [
+      "projectId",
+      "pipelineId",
+    ]),
+    outputSchema: pipeline,
+  },
+  {
+    name: "retry_project_pipeline",
+    description: "Retry failed or canceled jobs in a GitLab project pipeline.",
+    inputSchema: input({ projectId, pipelineId: s.integer({ minimum: 1, description: "The pipeline ID." }) }, [
+      "projectId",
+      "pipelineId",
+    ]),
+    outputSchema: pipeline,
+  },
+  {
+    name: "cancel_project_pipeline",
+    description: "Cancel a running or pending GitLab project pipeline.",
+    inputSchema: input({ projectId, pipelineId: s.integer({ minimum: 1, description: "The pipeline ID." }) }, [
+      "projectId",
+      "pipelineId",
+    ]),
+    outputSchema: pipeline,
+  },
+  {
+    name: "list_project_pipeline_jobs",
+    description: "List jobs in a GitLab project pipeline.",
+    inputSchema: input(
+      {
+        projectId,
+        pipelineId: s.integer({ minimum: 1, description: "The pipeline ID." }),
+        scope: s.array(s.string({ minLength: 1, description: "A GitLab job status." }), {
+          description: "Filter by one or more job statuses.",
+        }),
+        includeRetried: s.boolean({ description: "Include retried jobs in the response." }),
+        ...pagination,
+      },
+      ["projectId", "pipelineId"],
+    ),
+    outputSchema: paginatedJobs,
+  },
+  {
+    name: "list_project_releases",
+    description: "List releases for a GitLab project.",
+    inputSchema: input({ projectId, ...pagination }, ["projectId"]),
+    outputSchema: paginatedReleases,
+  },
+  {
+    name: "get_project_release",
+    description: "Get a GitLab project release by tag name.",
+    inputSchema: input({ projectId, tagName: s.string({ minLength: 1, description: "The release tag name." }) }, [
+      "projectId",
+      "tagName",
+    ]),
+    outputSchema: release,
+  },
+  {
+    name: "create_project_release",
+    description: "Create a release for a GitLab project.",
+    inputSchema: input(
+      {
+        projectId,
+        tagName: s.string({ minLength: 1, description: "The release tag name." }),
+        name: s.string({ description: "The release name." }),
+        description: s.string({ description: "The release notes." }),
+        ref: s.string({ minLength: 1, description: "A commit SHA, branch, or tag used to create a missing tag." }),
+        milestones: s.array(s.string({ minLength: 1, description: "A milestone title." }), {
+          description: "Milestone titles associated with the release.",
+        }),
+        releasedAt: s.string({ minLength: 1, description: "The release timestamp in ISO 8601 format." }),
+      },
+      ["projectId", "tagName"],
+    ),
+    outputSchema: release,
+  },
+  {
+    name: "update_project_release",
+    description: "Update a GitLab project release by tag name.",
+    inputSchema: input(
+      {
+        projectId,
+        tagName: s.string({ minLength: 1, description: "The existing release tag name." }),
+        name: s.string({ description: "The new release name." }),
+        description: s.string({ description: "The new release notes." }),
+        milestones: s.array(s.string({ minLength: 1, description: "A milestone title." }), {
+          description: "The complete replacement list of milestone titles. Use an empty array to clear milestones.",
+        }),
+        releasedAt: s.string({ minLength: 1, description: "The new release timestamp in ISO 8601 format." }),
+      },
+      ["projectId", "tagName"],
+    ),
+    outputSchema: release,
+  },
+  {
+    name: "delete_project_release",
+    description: "Delete a GitLab project release without deleting its Git tag.",
+    inputSchema: input({ projectId, tagName: s.string({ minLength: 1, description: "The release tag name." }) }, [
+      "projectId",
+      "tagName",
+    ]),
+    outputSchema: success,
   },
   {
     name: "list_project_issues",
